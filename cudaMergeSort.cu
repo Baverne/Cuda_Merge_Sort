@@ -191,7 +191,7 @@ __global__ void sortSmallBatch_k(float* Ms, int N, int d) {
         int offset;
 
         if (active) {
-            if (i >= sizeA) {
+            if (i > sizeA) {
                 Kx = i - sizeA;
                 Ky = sizeA;
                 Px = sizeA;
@@ -309,7 +309,7 @@ int main(void) {
         int d_vals[] = {2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
         int num_d = 10;
 
-        FILE* csv = fopen("benchmark.csv", "w");
+        FILE* csv = fopen("benchmark2a.csv", "w");
         fprintf(csv, "d,N,time_ms\n");
 
         for (int di = 0; di < num_d; di++) {
@@ -377,13 +377,15 @@ int main(void) {
         }
 
         fclose(csv);
-        printf("Benchmark results saved to benchmark.csv\n");
+        printf("Benchmark results saved to benchmark2a.csv\n");
     }
 
     //***********************//
     //// TEST EXERCICE 2.b ////
     //***********************//
     {
+        FILE* csv = fopen("benchmark2b.csv", "w");
+        fprintf(csv, "d,N,time_ms\n");
         const int N = 100000;
         int d_vals[] = {2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
         int num_d = 10;
@@ -437,12 +439,16 @@ int main(void) {
         // }
 
         printf("d=%4d | N=%d | time=%.4f ms\n", d, N, elapsed_ms);
+        fprintf(csv, "%d,%d,%.6f\n", d, N, elapsed_ms);
+
 
         testCUDA(cudaEventDestroy(start));
         testCUDA(cudaEventDestroy(stop));
         cudaFree(d_Ms);
         }
-        
+
+        fclose(csv);
+        printf("Benchmark results saved to benchmark2b.csv\n");
         
     }
 
