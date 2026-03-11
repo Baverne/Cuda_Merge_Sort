@@ -152,6 +152,105 @@ __global__ void mergeSmallBatch_k(float* ABs, float* Ms, int* cardAs, int N, int
 
 }
 
+__global__ void sortSmallBatch_k(float* Ms, int N, int d) {
+
+    int list_idx = blockIdx.x; // The list processed by this thread will be Ms[list_idx * d : list_idx * d + d]
+    if (list_idx >= N) return; // This block is useless
+
+    float* M = &Ms[list_idx * d];
+    int tidx_in_M = threadIdx.x; // The index of this thread in the list M
+    if (tidx_in_M >= d) return; //This thread is useless
+
+    // Create two shared buffers to avoid reading and writing at the same location and to read/write faster
+    extern __shared__ float shared[]; 
+    float* bufA = shared;
+    float* bufB = shared + d;
+    float* input = bufA;
+    float* output = bufB;
+
+    bufA[tidx_in_M] = M[tidx_in_M];
+    __syncthreads();
+
+
+    for (int step = 1 ; step < d ; step *= 2){
+        int merge_idx = tidx_in_M / (step * 2); // index of the merge this thread will participate to
+        int base = 2 * step * merge_idx;
+        float* A = &input[base];
+        float* B = &input[base + step];
+        int i = tidx_in_M % (2 * step);
+
+        // Skip threads that would write outside the array
+        bool active = (base + i  < d);
+        
+
+        // Compute real sizes of A and B
+        int sizeA = min(step, d - base);
+        int sizeB = min(step, max(0, d - (base + step)));
+
+        int Kx, Ky, Px, Py, Qx, Qy;
+        int offset;
+
+        if (active) {
+            if (i >= sizeA) {
+                Kx = i - sizeA;
+                Ky = sizeA;
+                Px = sizeA;
+                Py = i - sizeA;
+            }
+            else {
+                // In this case we initialize the K and P to the frontier of the diagonal
+                Kx = 0;
+                Ky = i;
+                Px = i;
+                Py = 0;
+            }
+            while (true) {
+                // We proceed by dichotomy, offset is therefore the half of the distance between the two frontiers
+                offset = abs(Ky-Py)/2;
+                Qx = Kx + offset;
+                Qy = Ky - offset;
+        
+                
+                if (Qy >= 0 && Qx <= sizeB && (Qy == sizeA || Qx == 0 || A[Qy] > B[Qx-1])) {
+                    if (Qx == sizeB || Qy == 0 || A[Qy-1] <= B[Qx]) {
+                        // We cornered the solution, we can return the value of M[i]
+                        if (Qy < sizeA && (Qx == sizeB || A[Qy] <= B[Qx])) {
+                            output[base + i] = A[Qy];
+                        }
+                        else {
+                            output[base + i] = B[Qx];
+                        }
+                        break;
+                    }
+                    else {
+                        // In this case our solution is in the upper right part of the diagonal
+                        Kx = Qx + 1;
+                        Ky = Qy - 1;
+                    }
+                }
+                else {
+                    // In this case our solution is in the lower left part of the diagonal
+                    Px = Qx - 1;
+                    Py = Qy + 1;
+                }
+            }
+        }
+        
+        __syncthreads();
+
+        // Swap buffers
+        float* temp = input;
+        input = output;
+        output = temp;
+
+        __syncthreads();
+    }
+
+    M[tidx_in_M] = input[tidx_in_M];
+    
+
+}
+
 int main(void) {
     //*********************//
     //// TEST EXERCICE 1 ////
@@ -279,6 +378,72 @@ int main(void) {
 
         fclose(csv);
         printf("Benchmark results saved to benchmark.csv\n");
+    }
+
+    //***********************//
+    //// TEST EXERCICE 2.b ////
+    //***********************//
+    {
+        const int N = 100000;
+        int d_vals[] = {2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
+        int num_d = 10;
+
+        for (int di = 0; di < num_d; di++) {
+            int d = d_vals[di];
+
+        float* h_Ms   = (float*)malloc(N * d * sizeof(float));
+        
+        for (int i = 0; i < N * d; i++) {
+            h_Ms[i] = (float)(rand() % 100);
+        }
+
+        // printf("Lists before sorting:\n");
+        // for (int i = 0; i < N ; i++){
+        //     for (int j = 0 ; j < d ; j++){
+        //         printf("%.0f ", h_Ms[i * d + j]);
+        //     }
+        //     printf("\n");
+        // }
+
+        float* d_Ms;
+        testCUDA(cudaMalloc((void**)&d_Ms,     N * d * sizeof(float)));
+        testCUDA(cudaMemcpy(d_Ms,    h_Ms,    N * d * sizeof(float), cudaMemcpyHostToDevice));
+
+        // Warmup
+        sortSmallBatch_k<<<N, d, 2 * d*sizeof(float)>>>(d_Ms, N, d);
+        testCUDA(cudaDeviceSynchronize());
+
+        // Timed run
+        cudaEvent_t start, stop;
+        float elapsed_ms = 0.0f;
+        testCUDA(cudaEventCreate(&start));
+        testCUDA(cudaEventCreate(&stop));
+        testCUDA(cudaEventRecord(start));
+        sortSmallBatch_k<<<N, d, 2 * d*sizeof(float)>>>(d_Ms, N, d); // Here we need to launch the kernel with shared memory
+        testCUDA(cudaGetLastError());
+        testCUDA(cudaDeviceSynchronize());
+        testCUDA(cudaEventRecord(stop));
+        testCUDA(cudaEventSynchronize(stop));
+        testCUDA(cudaEventElapsedTime(&elapsed_ms, start, stop));
+
+        testCUDA(cudaMemcpy(h_Ms, d_Ms, N * d * sizeof(float), cudaMemcpyDeviceToHost));
+
+        // printf("Lists after sorting:\n");
+        // for (int i = 0; i < N ; i++){
+        //     for (int j = 0 ; j < d ; j++){
+        //         printf("%.0f ", h_Ms[i * d + j]);
+        //     }
+        //     printf("\n");
+        // }
+
+        printf("d=%4d | N=%d | time=%.4f ms\n", d, N, elapsed_ms);
+
+        testCUDA(cudaEventDestroy(start));
+        testCUDA(cudaEventDestroy(stop));
+        cudaFree(d_Ms);
+        }
+        
+        
     }
 
 	return 0;
