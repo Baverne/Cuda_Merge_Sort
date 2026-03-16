@@ -270,7 +270,6 @@ __global__ void mergeBatch_k(float* ABs, float* Ms, int* cardAs, int N, int d) {
      The only difference with mergeSmallBatch_k is that this kernel can merge lists that are longer than 1024, because it distributes the workload across multiple blocks.
     */
 
-
     int gbx = threadIdx.x + blockDim.x * blockIdx.x; // Here we need to use the global index of the thread
     int list_idx = gbx / d; // The index of the list that this thread will participate in merging
     if (list_idx >= N) return; // If the list index is out of bounds, it means that this thread is useless in our scenario
