@@ -189,7 +189,6 @@ __global__ void sortSmallBatch_k(float* Ms, int N, int d) {
         // Skip threads that would write outside the array
         bool active = (base + i  < d);
         
-
         // Compute real sizes of A and B
         int sizeA = min(step, d - base);
         int sizeB = min(step, max(0, d - (base + step)));
