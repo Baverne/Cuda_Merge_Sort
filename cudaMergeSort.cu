@@ -25,15 +25,16 @@ __global__ void mergeSmall_k(float* A, float*B, float*M, int cardA, int cardB) {
 
     int Kx, Ky, Px, Py, Qx, Qy;
     int offset;
+
+    // Initialize K and P to the frontier of the diagonal
     if (i > cardA) {
-        // PAS SUR DE COMPRENDRE CETTE ETAPE %%
         Kx = i-cardA;
         Ky = cardA;
         Px = cardA;
         Py = i-cardA;
     }
     else {
-        // In this case we initialize the K and P to the frontier of the diagonal
+        
         Kx = 0;
         Ky = i;
         Px = i;
@@ -103,15 +104,14 @@ __global__ void mergeSmallBatch_k(float* ABs, float* Ms, int* cardAs, int N, int
     int Kx, Ky, Px, Py, Qx, Qy;
     int offset;
 
+    // Initialize K and P to the frontier of the diagonal
     if (tidx > cardA) {
-        // PAS SUR DE COMPRENDRE CETTE ETAPE %%
         Kx = tidx-cardA;
         Ky = cardA;
         Px = cardA;
         Py = tidx-cardA;
     }
     else {
-        // In this case we initialize the K and P to the frontier of the diagonal
         Kx = 0;
         Ky = tidx;
         Px = tidx;
@@ -157,6 +157,8 @@ __global__ void sortSmallBatch_k(float* Ms, int N, int d) {
     - Ms: contains the N arrays of length d, stored contiguously
     - N: The number of arrays to sort
     - d: The length of each array, must be <= 1024 due to the fact that max 1024 threads can be launched by a single block 
+
+    Each block will be in charge of sorting one array.
     */
 
     int list_idx = blockIdx.x; // The list processed by this thread will be Ms[list_idx * d : list_idx * d + d]
@@ -181,7 +183,7 @@ __global__ void sortSmallBatch_k(float* Ms, int N, int d) {
         int merge_idx = tidx_in_M / (step * 2); // index of the merge this thread will participate to
         int base = 2 * step * merge_idx;
         float* A = &input[base];
-        float* B = &input[base + step];
+        float* B = &input[base + step]; // The two lists to merge
         int i = tidx_in_M % (2 * step);
 
         // Skip threads that would write outside the array
@@ -196,6 +198,7 @@ __global__ void sortSmallBatch_k(float* Ms, int N, int d) {
         int offset;
 
         if (active) {
+            // Initialize K and P to the frontier of the diagonal
             if (i > sizeA) {
                 Kx = i - sizeA;
                 Ky = sizeA;
@@ -203,7 +206,6 @@ __global__ void sortSmallBatch_k(float* Ms, int N, int d) {
                 Py = i - sizeA;
             }
             else {
-                // In this case we initialize the K and P to the frontier of the diagonal
                 Kx = 0;
                 Ky = i;
                 Px = i;
@@ -257,22 +259,33 @@ __global__ void sortSmallBatch_k(float* Ms, int N, int d) {
 }
 
 __global__ void mergeBatch_k(float* ABs, float* Ms, int* cardAs, int N, int d) {
-    int gbx = threadIdx.x + blockDim.x * blockIdx.x;
-    int list_idx = gbx / d;
-    if (list_idx >= N) {
-        return;
-    }
+    /* for each sorted A and B of As and Bs, merge them into the corresponding M of Ms.
+    Arguments :
+     - ABs : input sorted lists, containing 2N lists. Each pair of list A and B is stored contiguously, that is to say A[i] = ABs[d * i : d * i + cardAs[i]] and B[i] = ABs[d * i + cardAs[i] : d * i + cardAs[i] + cardBs[i]]
+     - Ms : output merged lists, containing N lists of fixed size 2d.
+     - cardAs : list of the cardinals of the A lists (cardBs can be deducted since d = |As[i]| + |Bs[i]|)
+     - N : number of lists to merge.
+     - d : d = |As[i]| + |Bs[i]| for each i < N
+
+     The only difference with mergeSmallBatch_k is that this kernel can merge lists that are longer than 1024, because it distributes the workload across multiple blocks.
+    */
+
+
+    int gbx = threadIdx.x + blockDim.x * blockIdx.x; // Here we need to use the global index of the thread
+    int list_idx = gbx / d; // The index of the list that this thread will participate in merging
+    if (list_idx >= N) return; // If the list index is out of bounds, it means that this thread is useless in our scenario
+
     float* A = &ABs[list_idx * d];
     int cardA = cardAs[list_idx];
     int cardB = d - cardA;
     float* B = &ABs[list_idx * d + cardA];
     float* M = &Ms[list_idx * d];
-    int tidx = gbx - d * list_idx;
+    int tidx = gbx - d * list_idx; // The index of the item that this thread will merge in M
 
     int Kx, Ky, Px, Py, Qx, Qy;
     int offset;
     
-
+    // Initialize K and P to the frontier of the diagonal
     if (tidx > cardA) {
         Kx = tidx-cardA;
         Ky = cardA;
@@ -280,7 +293,6 @@ __global__ void mergeBatch_k(float* ABs, float* Ms, int* cardAs, int N, int d) {
         Py = tidx-cardA;
     }
     else {
-        // In this case we initialize the K and P to the frontier of the diagonal
         Kx = 0;
         Ky = tidx;
         Px = tidx;
@@ -471,6 +483,7 @@ int main(void) {
             h_Ms[i] = (float)(rand() % 100);
         }
 
+        // Can be used to check that the lists are correctly merged by printing them
         // printf("Lists before sorting:\n");
         // for (int i = 0; i < N ; i++){
         //     for (int j = 0 ; j < d ; j++){
@@ -493,7 +506,7 @@ int main(void) {
         testCUDA(cudaEventCreate(&start));
         testCUDA(cudaEventCreate(&stop));
         testCUDA(cudaEventRecord(start));
-        sortSmallBatch_k<<<N, d, 2 * d*sizeof(float)>>>(d_Ms, N, d); // Here we need to launch the kernel with shared memory
+        sortSmallBatch_k<<<N, d, 2 * d * sizeof(float)>>>(d_Ms, N, d); // Here we need to launch the kernel with shared memory
         testCUDA(cudaGetLastError());
         testCUDA(cudaDeviceSynchronize());
         testCUDA(cudaEventRecord(stop));
@@ -502,6 +515,7 @@ int main(void) {
 
         testCUDA(cudaMemcpy(h_Ms, d_Ms, N * d * sizeof(float), cudaMemcpyDeviceToHost));
 
+        // Can be used to check that the lists are correctly merged by printing them
         // printf("Lists after sorting:\n");
         // for (int i = 0; i < N ; i++){
         //     for (int j = 0 ; j < d ; j++){
@@ -560,6 +574,7 @@ int main(void) {
                 }
             }
 
+            // Can be used to check that the lists are correctly merged by printing them
             // printf("Lists before merging:\n");
             // for (int i = 0; i < N; i++){
             //     printf("A: ");
@@ -602,6 +617,7 @@ int main(void) {
             float* h_Ms   = (float*)malloc(N * d * sizeof(float));
             testCUDA(cudaMemcpy(h_Ms,    d_Ms,    N * d * sizeof(float), cudaMemcpyDeviceToHost));
 
+            // Can be used to check that the lists are correctly sorted by printing them
             // printf("Lists after merging:\n");
             // for (int i = 0; i < N ; i++){
             //     for (int j = 0 ; j < d ; j++){
@@ -610,6 +626,7 @@ int main(void) {
             //     printf("\n");
             // }
 
+            // Checks that every list has been correctly merged (without printing all the lists)
             // for (int i = 0 ; i < d * N ; i++) {
             //     if (i % d == 0) continue;
             //     if (h_Ms[i-1] > h_Ms[i]) {
